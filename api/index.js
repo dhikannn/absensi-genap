@@ -130,16 +130,18 @@ app.use((req, res, next) => {
 const authenticateToken = (allowedRoles = []) => {
     return async (req, res, next) => {
         try {
-            const token = req.signedCookies.token;
-            if (!token) {
+            let token = req.signedCookies?.token;
+            const rawCookies = req.headers.cookie || '';
+
+            if (!token && !rawCookies) {
                 return res.status(401).json({ message: 'Akses ditolak. silakan login.' });
             }
 
             const response = await fetch(`${process.env.MAIN_API_URL}/api/validate-token`, {
+                method: 'GET',
                 headers: {
-                    'Cookie': `token=${token}`
-                },
-                credentials: 'include'
+                    'Cookie': rawCookies
+                }
             });
 
             if (!response.ok) {
