@@ -1,0 +1,470 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
+const compression = require('compression');
+const multer = require('multer');
+const sharp = require('sharp');
+const xss = require('xss');
+const { z } = require('zod');
+const { createClient } = require('@supabase/supabase-js');
+
+const app = express();
+
+app.set('trust proxy', 1);
+app.use(cookieParser(process.env.COOKIE_SECRET));
+app.use(compression());
+
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    hidePoweredBy: true,
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "https:"],
+            connectSrc: ["'self'", "https:"],
+            fontSrc: ["'self'"],
+            objectSrc: ["'none'"],
+            frameAncestors: ["'none'"],
+            upgradeInsecureRequests: []
+        }
+    },
+    hsts: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true
+    },
+    frameguard: { action: 'deny' },
+    noSniff: true,
+    xssFilter: true,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    permittedCrossDomainPolicies: { permittedPolicies: 'none' }
+}));
+
+app.use((req, res, next) => {
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=(), usb=()');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+});
+
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',')
+    : ['https://sith-s25.my.id', 'https://siths25.vercel.app'];
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('CORS Blocked'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    credentials: true
+}));
+
+const csrfCheck = (req, res, next) => {
+    if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+        const origin = req.get('origin');
+        if (origin && !allowedOrigins.includes(origin)) {
+            return res.status(403).json({ message: 'CSRF check failed' });
+        }
+    }
+    next();
+};
+app.use(csrfCheck);
+
+const csrfHeaderCheck = (req, res, next) => {
+    if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+        const xRequestedWith = req.get('X-Requested-With');
+        if (!xRequestedWith) {
+            return res.status(403).json({ message: 'Missing security header' });
+        }
+    }
+    next();
+};
+app.use(csrfHeaderCheck);
+
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
+    console.error("ERROR: Supabase config missing");
+    process.exit(1);
+}
+
+if (!process.env.MAIN_API_URL) {
+    console.error("ERROR: MAIN_API_URL config missing");
+    process.exit(1);
+}
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
+    auth: { persistSession: false }
+});
+
+const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500,
+    message: { message: "Terlalu banyak request." },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use(globalLimiter);
+
+app.use((req, res, next) => {
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('application/json')) {
+        express.json({ limit: '1mb' })(req, res, next);
+    } else if (contentType.includes('multipart/form-data')) {
+        next();
+    } else {
+        express.urlencoded({ extended: true, limit: '1mb' })(req, res, next);
+    }
+});
+
+const authenticateToken = (allowedRoles = []) => {
+    return async (req, res, next) => {
+        try {
+            const token = req.signedCookies.token;
+            if (!token) {
+                return res.status(401).json({ message: 'Akses ditolak. silakan login.' });
+            }
+
+            const response = await fetch(`${process.env.MAIN_API_URL}/api/validate-token`, {
+                headers: {
+                    'Cookie': `token=${token}`
+                },
+                credentials: 'include'
+            });
+
+            if (!response.ok) {
+                return res.status(401).json({ message: 'Token tidak valid.' });
+            }
+
+            const data = await response.json();
+            if (!data.valid) {
+                return res.status(401).json({ message: 'Token tidak valid.' });
+            }
+
+            req.user = data.user;
+
+            if (allowedRoles.length > 0 && !allowedRoles.includes(req.user.role)) {
+                return res.status(403).json({ message: 'Akses ditolak. Role tidak sesuai.' });
+            }
+
+            next();
+        } catch (err) {
+            console.error('Token validation error:', err);
+            return res.status(500).json({ message: 'Gagal validasi token.' });
+        }
+    };
+};
+
+const requireEvenNIM = (req, res, next) => {
+    const nim = req.user?.nim || req.body?.target_nim;
+    if (!nim) {
+        return res.status(400).json({ message: 'NIM tidak ditemukan.' });
+    }
+
+    const lastDigit = parseInt(nim.toString().slice(-1));
+    if (lastDigit % 2 !== 0) {
+        return res.status(403).json({ message: 'API ini hanya untuk NIM genap.' });
+    }
+    next();
+};
+
+const validate = (schema) => (req, res, next) => {
+    try {
+        schema.parse(req.body);
+        next();
+    } catch (e) {
+        return res.status(400).json({ message: e.errors?.[0]?.message || 'Data tidak valid' });
+    }
+};
+
+const sessionSchema = z.object({
+    title: z.string().min(3).max(100),
+    description: z.string().max(500).optional(),
+    is_photo_required: z.boolean().optional().or(z.string())
+});
+
+const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+
+const checkFileHeader = (buffer) => {
+    const signatures = {
+        jpeg: [0xFF, 0xD8, 0xFF],
+        png: [0x89, 0x50, 0x4E, 0x47],
+        webp: [0x52, 0x49, 0x46, 0x46]
+    };
+    for (const [, sig] of Object.entries(signatures)) {
+        if (sig.every((byte, i) => buffer[i] === byte)) return true;
+    }
+    return false;
+};
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (allowedMimeTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Format tidak didukung'), false);
+        }
+    }
+});
+
+const handleUploadError = (err, req, res, next) => {
+    if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ message: 'File terlalu besar (max 5MB)' });
+        }
+        return res.status(400).json({ message: err.message });
+    } else if (err) {
+        return res.status(400).json({ message: err.message || 'Upload error' });
+    }
+    next();
+};
+
+const processUpload = async (buffer) => {
+    return await sharp(buffer)
+        .resize({ width: 800, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 70, progressive: true })
+        .toBuffer();
+};
+
+const verifyFileContent = (req, res, next) => {
+    const files = req.files ? Object.values(req.files).flat() : (req.file ? [req.file] : []);
+    for (const file of files) {
+        if (!checkFileHeader(file.buffer)) {
+            return res.status(400).json({ message: 'File terdeteksi meragukan. Upload file asli.' });
+        }
+    }
+    next();
+};
+
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', type: 'genap' });
+});
+
+app.post('/api/attendance/sessions', authenticateToken(['admin', 'sekretaris', 'dev']), validate(sessionSchema), async (req, res) => {
+    try {
+        const { title, description, is_photo_required } = req.body;
+        const cleanTitle = xss(title);
+        const cleanDesc = description ? xss(description) : "";
+        const photoReq = is_photo_required === true || is_photo_required === 'true';
+
+        const { data, error } = await supabase.from('attendance_sessions')
+            .insert([{
+                title: cleanTitle,
+                description: cleanDesc,
+                is_photo_required: photoReq,
+                created_by: req.user.nim,
+                is_open: true
+            }]).select();
+
+        if (error) throw error;
+        res.json({ message: 'Sesi dibuat', data });
+    } catch (err) {
+        console.error('Create session error:', err);
+        res.status(500).json({ message: 'Gagal buat sesi' });
+    }
+});
+
+app.get('/api/attendance/sessions', authenticateToken(), async (req, res) => {
+    try {
+        const { data, error } = await supabase.from('attendance_sessions').select('*').order('created_at', { ascending: false });
+        if (error) throw error;
+        res.json({ data });
+    } catch (err) {
+        res.status(500).json({ message: 'Error server' });
+    }
+});
+
+app.put('/api/attendance/close/:id', authenticateToken(['admin', 'sekretaris', 'dev']), async (req, res) => {
+    try {
+        const { error } = await supabase.from('attendance_sessions').update({ is_open: false }).eq('id', req.params.id);
+        if (error) throw error;
+        res.json({ message: 'Sesi ditutup' });
+    } catch (err) {
+        res.status(500).json({ message: 'Gagal menutup sesi' });
+    }
+});
+
+app.post('/api/attendance/submit', authenticateToken(), requireEvenNIM, upload.single('image'), handleUploadError, verifyFileContent, async (req, res) => {
+    try {
+        const { session_id, user_name_input, status, reason } = req.body;
+        const user_nim = req.user.nim;
+        const file = req.file;
+
+        if (!session_id || !status) return res.status(400).json({ message: "Data tidak lengkap" });
+
+        const { data: session, error: sErr } = await supabase.from('attendance_sessions').select('*').eq('id', session_id).single();
+        if (sErr || !session) return res.status(404).json({ message: 'Sesi tak ditemukan' });
+        if (!session.is_open) return res.status(400).json({ message: 'Sesi sudah ditutup' });
+
+        const { data: existing } = await supabase.from('attendance_records')
+            .select('id, status')
+            .eq('session_id', session_id)
+            .eq('user_nim', user_nim)
+            .single();
+
+        let isUpdate = false;
+        if (existing) {
+            if (existing.status === 'Izin' && status !== 'Izin') {
+                isUpdate = true;
+            } else {
+                return res.status(400).json({ message: 'Sudah mengisi kehadiran/izin!' });
+            }
+        }
+
+        if (status !== 'Izin' && session.is_photo_required && !file) {
+            return res.status(400).json({ message: 'Wajib upload foto bukti kehadiran!' });
+        }
+
+        let photoUrl = null;
+        if (file) {
+            try {
+                const processedBuffer = await sharp(file.buffer)
+                    .resize({ width: 800, fit: 'inside', withoutEnlargement: true })
+                    .jpeg({ quality: 65, progressive: true })
+                    .toBuffer();
+
+                const fileName = `att-${session_id}-${user_nim}-${Date.now()}.jpg`;
+                const { error } = await supabase.storage.from('attendance-images').upload(fileName, processedBuffer, { contentType: 'image/jpeg' });
+                if (error) throw error;
+
+                photoUrl = fileName;
+            } catch (err) {
+                return res.status(500).json({ message: 'Gagal memproses gambar.' });
+            }
+        }
+
+        let realName = user_nim;
+        const { data: uData } = await supabase.from('users').select('name').eq('nim', user_nim).single();
+        if (uData && uData.name) realName = uData.name;
+        else if (user_name_input) realName = xss(user_name_input);
+
+        let finalStatus = 'Hadir';
+        let finalReason = null;
+
+        if (status === 'Izin') {
+            finalStatus = 'Izin';
+            finalReason = reason ? xss(reason) : 'Izin tanpa keterangan';
+        } else if (session.is_photo_required) {
+            finalStatus = 'Pending';
+        }
+
+        if (isUpdate) {
+            const { error } = await supabase.from('attendance_records')
+                .update({
+                    status: finalStatus,
+                    photo_url: photoUrl,
+                    created_at: new Date().toISOString()
+                })
+                .eq('id', existing.id)
+                .eq('status', 'Izin')
+                .select();
+
+            if (error) throw error;
+        } else {
+            const { error } = await supabase.from('attendance_records').insert([{
+                session_id, user_nim, user_name: realName, photo_url: photoUrl, status: finalStatus, reason: finalReason
+            }]);
+            if (error) {
+                if (error.code === '23505') {
+                    return res.status(400).json({ message: 'Anda sudah absen sebelumnya.' });
+                }
+                throw error;
+            }
+        }
+
+        let msg = 'Absen Berhasil';
+        if (isUpdate) msg = 'Absen Menyusul Berhasil!';
+        else if (finalStatus === 'Pending') msg = 'Terkirim (Menunggu Verifikasi)';
+        else if (finalStatus === 'Izin') msg = 'Permohonan Izin Tercatat';
+
+        res.json({ message: msg });
+    } catch (err) {
+        console.error("Submit Error:", err);
+        res.status(500).json({ message: 'Gagal mengirim data.' });
+    }
+});
+
+app.put('/api/attendance/approve/:record_id', authenticateToken(['admin', 'sekretaris', 'dev']), async (req, res) => {
+    try {
+        const { error } = await supabase.from('attendance_records').update({ status: 'Hadir' }).eq('id', req.params.record_id);
+        if (error) throw error;
+        res.json({ message: 'Diverifikasi' });
+    } catch (err) {
+        res.status(500).json({ message: 'Gagal verifikasi' });
+    }
+});
+
+app.post('/api/attendance/manual', authenticateToken(['admin', 'sekretaris', 'dev']), async (req, res) => {
+    try {
+        const { session_id, target_nim, target_name, status } = req.body;
+
+        const lastDigit = parseInt(target_nim.toString().slice(-1));
+        if (lastDigit % 2 !== 0) {
+            return res.status(403).json({ message: 'API ini hanya untuk NIM genap.' });
+        }
+
+        const cleanName = xss(target_name);
+
+        const { error } = await supabase.from('attendance_records').insert([{
+            session_id, user_nim: target_nim, user_name: cleanName, status: status || 'Hadir'
+        }]);
+        if (error && error.code === '23505') return res.status(400).json({ message: 'Sudah absen' });
+        if (error) throw error;
+        res.json({ message: 'Done' });
+    } catch (err) {
+        res.status(500).json({ message: 'Gagal input' });
+    }
+});
+
+app.get('/api/attendance/stats/:session_id', authenticateToken(['admin', 'sekretaris', 'dev']), async (req, res) => {
+    try {
+        const { data, error } = await supabase.from('attendance_records').select('*').eq('session_id', req.params.session_id);
+        if (error) throw error;
+
+        const dataWithLinks = await Promise.all(data.map(async (record) => {
+            if (record.photo_url && !record.photo_url.startsWith('http')) {
+                const { data: signed } = await supabase
+                    .storage
+                    .from('attendance-images')
+                    .createSignedUrl(record.photo_url, 3000);
+
+                if (signed) {
+                    return { ...record, photo_url: signed.signedUrl };
+                }
+            }
+            return record;
+        }));
+
+        res.json({ data: dataWithLinks });
+    } catch (err) {
+        res.status(500).json({ message: 'Gagal ambil data' });
+    }
+});
+
+app.use((err, req, res, next) => {
+    console.error('Server Error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+});
+
+app.use((req, res) => {
+    res.status(404).json({ message: 'Endpoint tidak ditemukan' });
+});
+
+const PORT = process.env.PORT || 5002;
+app.listen(PORT, () => {
+    console.log(`[GENAP] Server running on port ${PORT}`);
+});
+
+module.exports = app;
