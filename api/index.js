@@ -58,15 +58,20 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
     : ['https://sith-s25.my.id', 'https://siths25.vercel.app'];
 
+const isOriginAllowed = (origin) => {
+    const allowedPatterns = [
+        /^https:\/\/.*\.sith-s25\.my\.id$/,
+        /^https:\/\/sith-s25\.my\.id$/,
+        /^https:\/\/.*\.vercel\.app$/
+    ];
+    if (!origin) return true;
+    if (allowedOrigins.includes(origin)) return true;
+    return allowedPatterns.some(pattern => pattern.test(origin));
+};
+
 app.use(cors({
     origin: (origin, callback) => {
-        const allowedPatterns = [
-            /^https:\/\/.*\.sith-s25\.my\.id$/,
-            /^https:\/\/sith-s25\.my\.id$/,
-            /^https:\/\/.*\.vercel\.app$/
-        ];
-
-        if (!origin || allowedOrigins.includes(origin) || allowedPatterns.some(pattern => pattern.test(origin))) {
+        if (isOriginAllowed(origin)) {
             callback(null, true);
         } else {
             callback(new Error('CORS Blocked'));
@@ -80,8 +85,8 @@ app.use(cors({
 const csrfCheck = (req, res, next) => {
     if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
         const origin = req.get('origin');
-        if (origin && !allowedOrigins.includes(origin)) {
-            return res.status(403).json({ message: 'CSRF check failed' });
+        if (origin && !isOriginAllowed(origin)) {
+            return res.status(403).json({ message: 'CSRF check failed (Origin mismatch)' });
         }
     }
     next();
