@@ -152,19 +152,50 @@ const authenticateToken = (allowedRoles = []) => {
                 return res.status(401).json({ message: 'Akses ditolak. silakan login.' });
             }
 
-            console.log("DEBUG: rawCookies:", rawCookies); // Log cookies
+            if (process.env.JWT_SECRET && req.signedCookies && req.signedCookies.token) {
+                try {
+                    const jwt = require('jsonwebtoken');
+                    const decoded = jwt.verify(req.signedCookies.token, process.env.JWT_SECRET);
+                    console.log("DEBUG: Local Token Verification Success");
+                    req.user = decoded;
+
+                    if (allowedRoles.length > 0 && !allowedRoles.includes(req.user.role)) {
+                        return res.status(403).json({ message: 'Akses ditolak. Role tidak sesuai (Local).' });
+                    }
+                    return next();
+                } catch (err) {
+                    if (err.code !== 'MODULE_NOT_FOUND') {
+                        console.error("DEBUG: Local Token Verification Failed:", err.message);
+                        return res.status(401).json({ message: 'Token tidak valid (Local verify failed).' });
+                    }
+                    console.log("DEBUG: jsonwebtoken not found, falling back to fetch.");
+                }
+            }
+
+            console.log("DEBUG: Falling back to Upstream Validation. rawCookies present:", !!rawCookies);
+
+            const upstreamHeaders = {
+                'Cookie': rawCookies,
+                'Content-Type': 'application/json',
+                'User-Agent': req.get('User-Agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', // Forward or Spoof UA
+                'X-Forwarded-For': req.get('X-Forwarded-For') || req.ip, // Forward IP
+                'X-Real-IP': req.get('X-Real-IP') || req.ip
+            };
+
             const response = await fetch(`${process.env.MAIN_API_URL}/api/validate-token`, {
                 method: 'GET',
-                headers: {
-                    'Cookie': rawCookies,
-                    'Content-Type': 'application/json'
-                }
+                headers: upstreamHeaders
             });
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error("DEBUG: Upstream Auth Failed:", response.status, errorText);
-                return res.status(401).json({ message: `Token tidak valid (Upstream ${response.status}): ${errorText.substring(0, 100)}` });
+                console.error("DEBUG: Upstream Auth Failed:", response.status, errorText.substring(0, 200));
+
+                if (response.status === 429 || errorText.includes("Security Checkpoint")) {
+                    return res.status(429).json({ message: 'Gagal validasi: Terblokir oleh proteksi Vercel. Solusi: Tambahkan JWT_SECRET ke env variable.' });
+                }
+
+                return res.status(401).json({ message: `Token tidak valid (Upstream ${response.status})` });
             }
 
             const data = await response.json();
