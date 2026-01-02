@@ -82,6 +82,19 @@ app.use(cors({
     credentials: true
 }));
 
+app.options('*', cors({
+    origin: (origin, callback) => {
+        if (isOriginAllowed(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('CORS Blocked'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    credentials: true
+}));
+
 const csrfCheck = (req, res, next) => {
     if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
         const origin = req.get('origin');
