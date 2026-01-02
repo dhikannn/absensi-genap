@@ -152,20 +152,25 @@ const authenticateToken = (allowedRoles = []) => {
                 return res.status(401).json({ message: 'Akses ditolak. silakan login.' });
             }
 
+            console.log("DEBUG: rawCookies:", rawCookies); // Log cookies
             const response = await fetch(`${process.env.MAIN_API_URL}/api/validate-token`, {
                 method: 'GET',
                 headers: {
-                    'Cookie': rawCookies
+                    'Cookie': rawCookies,
+                    'Content-Type': 'application/json'
                 }
             });
 
             if (!response.ok) {
-                return res.status(401).json({ message: 'Token tidak valid.' });
+                const errorText = await response.text();
+                console.error("DEBUG: Upstream Auth Failed:", response.status, errorText);
+                return res.status(401).json({ message: `Token tidak valid (Upstream ${response.status}): ${errorText.substring(0, 100)}` });
             }
 
             const data = await response.json();
             if (!data.valid) {
-                return res.status(401).json({ message: 'Token tidak valid.' });
+                console.error("DEBUG: Upstream Token Invalid:", data);
+                return res.status(401).json({ message: 'Token tidak valid (Invalid Data)' });
             }
 
             req.user = data.user;
