@@ -54,6 +54,7 @@ app.use((req, res, next) => {
     next();
 });
 
+// CORS Manual Handling
 const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
     : ['https://sith-s25.my.id', 'https://siths25.vercel.app'];
@@ -69,31 +70,22 @@ const isOriginAllowed = (origin) => {
     return allowedPatterns.some(pattern => pattern.test(origin));
 };
 
-app.use(cors({
-    origin: (origin, callback) => {
-        if (isOriginAllowed(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('CORS Blocked'));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    credentials: true
-}));
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (isOriginAllowed(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Guest-ID');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
 
-app.options('*', cors({
-    origin: (origin, callback) => {
-        if (isOriginAllowed(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('CORS Blocked'));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    credentials: true
-}));
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
+
+
 
 const csrfCheck = (req, res, next) => {
     if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
