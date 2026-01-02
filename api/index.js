@@ -186,7 +186,7 @@ const authenticateToken = (allowedRoles = []) => {
             next();
         } catch (err) {
             console.error('Token validation error:', err);
-            return res.status(500).json({ message: 'Gagal validasi token.' });
+            return res.status(500).json({ message: `Gagal validasi token: ${err.message}` });
         }
     };
 };
