@@ -398,10 +398,14 @@ app.post('/api/attendance/submit', authenticateToken(), requireEvenNIM, upload.s
             }
         }
 
-        let realName = user_nim;
-        const { data: uData } = await supabase.from('users').select('name').eq('nim', user_nim).single();
-        if (uData && uData.name) realName = uData.name;
-        else if (user_name_input) realName = xss(user_name_input);
+        let realName = req.user.name || user_nim;
+
+        if (!req.user.name) {
+            const { data: uData } = await supabase.from('users').select('name').eq('nim', user_nim).single();
+            if (uData && uData.name) realName = uData.name;
+        }
+
+        if (user_name_input) realName = xss(user_name_input);
 
         let finalStatus = 'Hadir';
         let finalReason = null;
