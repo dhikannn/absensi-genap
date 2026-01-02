@@ -60,7 +60,13 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 
 app.use(cors({
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        const allowedPatterns = [
+            /^https:\/\/.*\.sith-s25\.my\.id$/,
+            /^https:\/\/sith-s25\.my\.id$/,
+            /^https:\/\/.*\.vercel\.app$/
+        ];
+
+        if (!origin || allowedOrigins.includes(origin) || allowedPatterns.some(pattern => pattern.test(origin))) {
             callback(null, true);
         } else {
             callback(new Error('CORS Blocked'));
