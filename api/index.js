@@ -118,6 +118,11 @@ if (!process.env.MAIN_API_URL) {
     process.exit(1);
 }
 
+if (!process.env.JWT_SECRET) {
+    console.error("ERROR: JWT_SECRET config missing - required for local token validation");
+    process.exit(1);
+}
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
     auth: { persistSession: false }
 });
