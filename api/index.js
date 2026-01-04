@@ -565,6 +565,28 @@ app.get('/api/attendance/stats/:session_id', authenticateToken(['admin', 'sekret
     }
 });
 
+app.get('/api/attendance/my-status/:session_id', authenticateToken(), async (req, res) => {
+    try {
+        const user_nim = req.user.nim;
+        const { data, error } = await supabase
+            .from('attendance_records')
+            .select('status, reason, created_at')
+            .eq('session_id', req.params.session_id)
+            .eq('user_nim', user_nim)
+            .single();
+
+        if (error && error.code !== 'PGRST116') throw error;
+
+        if (data) {
+            res.json({ exists: true, status: data.status, reason: data.reason, created_at: data.created_at });
+        } else {
+            res.json({ exists: false });
+        }
+    } catch (err) {
+        res.status(500).json({ message: 'Gagal ambil status' });
+    }
+});
+
 app.use((err, req, res, next) => {
     console.error('Server Error:', err);
     res.status(500).json({ message: 'Internal server error' });
