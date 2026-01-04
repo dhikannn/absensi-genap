@@ -377,6 +377,25 @@ app.post('/api/gsheet/sync', authenticateToken(['admin', 'dev']), async (req, re
     }
 });
 
+app.get('/api/cron/sync-gsheet', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        const isVercelCron = req.headers['x-vercel-cron'] === '1';
+        if (!isVercelCron && process.env.CRON_SECRET) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+    }
+
+    try {
+        console.log('[Cron] GSheet sync triggered');
+        const result = await syncAllSessions(supabase, 'genap');
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[Cron] Sync error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.post('/api/attendance/submit', authenticateToken(), requireEvenNIM, upload.single('image'), handleUploadError, verifyFileContent, async (req, res) => {
     try {
         const { session_id, user_name_input, status, reason } = req.body;
@@ -554,17 +573,6 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 5002;
 app.listen(PORT, () => {
     console.log(`[GENAP] Server running on port ${PORT}`);
-
-    const SYNC_INTERVAL = 5 * 60 * 1000;
-    setInterval(() => {
-        console.log('[GSheet] Starting scheduled sync...');
-        syncAllSessions(supabase, 'genap').catch(err => console.error('[GSheet] Scheduled sync error:', err));
-    }, SYNC_INTERVAL);
-
-    setTimeout(() => {
-        console.log('[GSheet] Starting initial sync...');
-        syncAllSessions(supabase, 'genap').catch(err => console.error('[GSheet] Initial sync error:', err));
-    }, 10000);
 });
 
 module.exports = app;
