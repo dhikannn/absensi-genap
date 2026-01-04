@@ -358,7 +358,7 @@ app.delete('/api/attendance/sessions/:id', authenticateToken(['admin', 'sekretar
         if (error) throw error;
 
         if (session?.title) {
-            deleteSessionSheet(`${session.title} (GENAP)`).catch(err => console.error('[GSheet] Delete tab error:', err));
+            deleteSessionSheet(session.title).catch(err => console.error('[GSheet] Delete tab error:', err));
         }
 
         res.json({ message: 'Sesi dihapus' });
