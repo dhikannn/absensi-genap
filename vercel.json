@@ -1,11 +1,5 @@
 {
     "version": 2,
-    "crons": [
-        {
-            "path": "/api/cron/sync-gsheet",
-            "schedule": "*/5 * * * *"
-        }
-    ],
     "rewrites": [
         {
             "source": "/api/(.*)",
