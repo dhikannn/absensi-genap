@@ -24,7 +24,6 @@ const getAuth = () => {
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID || '146MsEriqhrN2s-FzmgS9HAXZ2K5zWYYxuVLi-dcC4W8';
 
 const sanitizeSheetName = (name) => {
-
     return name
         .replace(/[*?:\/\\\[\]]/g, '-')
         .substring(0, 100);
@@ -101,7 +100,7 @@ const deleteSheetTab = async (sheets, title) => {
     }
 };
 
-const syncSessionToSheet = async (sessionTitle, records, allUsers = []) => {
+const syncSessionToSheet = async (sessionTitle, records, allUsers = [], nimType = 'genap') => {
     const auth = getAuth();
     if (!auth) {
         return { success: false, error: 'Google credentials not configured' };
@@ -113,18 +112,38 @@ const syncSessionToSheet = async (sessionTitle, records, allUsers = []) => {
 
         await createSheetTab(sheets, sanitizedTitle);
 
-        const headers = [['No', 'NIM', 'Nama', 'Status', 'Alasan', 'Waktu Input', 'Link Foto']];
+        let existingData = [];
+        try {
+            const response = await sheets.spreadsheets.values.get({
+                spreadsheetId: SPREADSHEET_ID,
+                range: `'${sanitizedTitle}'!A2:G`,
+            });
+            existingData = response.data.values || [];
+        } catch (err) {
+        }
 
-        const recordsByNim = {};
-        records.forEach(r => {
-            recordsByNim[r.user_nim] = r;
-        });
+        const isMyNim = (nim) => {
+            const lastDigit = parseInt(nim.toString().slice(-1));
+            return nimType === 'ganjil' ? lastDigit % 2 !== 0 : lastDigit % 2 === 0;
+        };
 
-        const allData = [];
+        const otherData = existingData.filter(row => {
+            const nim = row[1];
+            return nim && !isMyNim(nim);
+        }).map(row => ({
+            nim: row[1],
+            name: row[2],
+            status: row[3],
+            reason: row[4],
+            createdAt: row[5],
+            photoUrl: row[6]
+        }));
+
+        const myData = [];
         const recordedNims = new Set(records.map(r => r.user_nim));
 
         records.forEach(r => {
-            allData.push({
+            myData.push({
                 nim: r.user_nim,
                 name: r.user_name,
                 status: r.status,
@@ -136,7 +155,7 @@ const syncSessionToSheet = async (sessionTitle, records, allUsers = []) => {
 
         allUsers.forEach(u => {
             if (!recordedNims.has(u.nim)) {
-                allData.push({
+                myData.push({
                     nim: u.nim,
                     name: u.name,
                     status: 'Belum Absen',
@@ -147,8 +166,11 @@ const syncSessionToSheet = async (sessionTitle, records, allUsers = []) => {
             }
         });
 
+        const allData = [...otherData, ...myData];
+
         allData.sort((a, b) => a.nim.toString().localeCompare(b.nim.toString(), undefined, { numeric: true }));
 
+        const headers = [['No', 'NIM', 'Nama', 'Status', 'Alasan', 'Waktu Input', 'Link Foto']];
         const rows = allData.map((item, index) => [
             index + 1,
             item.nim,
@@ -173,7 +195,7 @@ const syncSessionToSheet = async (sessionTitle, records, allUsers = []) => {
             resource: { values },
         });
 
-        return { success: true, rowCount: rows.length };
+        return { success: true, rowCount: rows.length, myRows: myData.length, otherRows: otherData.length };
     } catch (error) {
         console.error('[GSheet] Sync error:', error.message);
         return { success: false, error: error.message };
@@ -214,11 +236,6 @@ const syncAllSessions = async (supabase, nimType = 'genap') => {
             .from('users')
             .select('nim, name');
 
-        const filteredUsers = (users || []).filter(u => {
-            const lastDigit = parseInt(u.nim.toString().slice(-1));
-            return nimType === 'ganjil' ? lastDigit % 2 !== 0 : lastDigit % 2 === 0;
-        });
-
         const results = [];
         for (const session of sessions) {
             const { data: records } = await supabase
@@ -226,15 +243,11 @@ const syncAllSessions = async (supabase, nimType = 'genap') => {
                 .select('*')
                 .eq('session_id', session.id);
 
-            const filteredRecords = (records || []).filter(r => {
-                const lastDigit = parseInt(r.user_nim.toString().slice(-1));
-                return nimType === 'ganjil' ? lastDigit % 2 !== 0 : lastDigit % 2 === 0;
-            });
-
             const result = await syncSessionToSheet(
-                `${session.title} (${nimType.toUpperCase()})`,
-                filteredRecords,
-                filteredUsers
+                session.title,
+                records || [],
+                users || [],
+                nimType
             );
 
             results.push({
@@ -243,7 +256,7 @@ const syncAllSessions = async (supabase, nimType = 'genap') => {
             });
         }
 
-        console.log(`[GSheet] Sync complete for ${nimType}: ${results.length} sessions`);
+        console.log(`[GSheet] Sync complete (${nimType}): ${results.length} sessions`);
         return { success: true, results };
     } catch (error) {
         console.error('[GSheet] Sync all error:', error.message);
