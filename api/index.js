@@ -498,6 +498,8 @@ app.post('/api/attendance/submit', authenticateToken(), requireEvenNIM, upload.s
         else if (finalStatus === 'Izin') msg = 'Permohonan Izin Tercatat';
 
         res.json({ message: msg });
+
+        syncAllSessions(supabase, 'genap').catch(err => console.error('[GSheet] Post-submit sync error:', err));
     } catch (err) {
         console.error("Submit Error:", err);
         res.status(500).json({ message: 'Gagal mengirim data.' });
@@ -509,6 +511,7 @@ app.put('/api/attendance/approve/:record_id', authenticateToken(['admin', 'sekre
         const { error } = await supabase.from('attendance_records').update({ status: 'Hadir' }).eq('id', req.params.record_id);
         if (error) throw error;
         res.json({ message: 'Diverifikasi' });
+        syncAllSessions(supabase, 'genap').catch(err => console.error('[GSheet] Post-approve sync error:', err));
     } catch (err) {
         res.status(500).json({ message: 'Gagal verifikasi' });
     }
@@ -531,6 +534,7 @@ app.post('/api/attendance/manual', authenticateToken(['admin', 'sekretaris', 'de
         if (error && error.code === '23505') return res.status(400).json({ message: 'Sudah absen' });
         if (error) throw error;
         res.json({ message: 'Done' });
+        syncAllSessions(supabase, 'genap').catch(err => console.error('[GSheet] Post-manual sync error:', err));
     } catch (err) {
         res.status(500).json({ message: 'Gagal input' });
     }
