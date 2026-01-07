@@ -563,6 +563,32 @@ app.get('/api/attendance/stats/:session_id', authenticateToken(['admin', 'sekret
     }
 });
 
+app.get('/api/attendance/my-status-all', authenticateToken(), async (req, res) => {
+    try {
+        const user_nim = req.user.nim;
+        const { data, error } = await supabase
+            .from('attendance_records')
+            .select('session_id, status, reason, created_at')
+            .eq('user_nim', user_nim);
+
+        if (error) throw error;
+
+        const statusMap = {};
+        (data || []).forEach(record => {
+            statusMap[record.session_id] = {
+                status: record.status,
+                reason: record.reason,
+                created_at: record.created_at
+            };
+        });
+
+        res.json(statusMap);
+    } catch (err) {
+        console.error('Get all status error:', err);
+        res.status(500).json({ message: 'Gagal ambil status' });
+    }
+});
+
 app.get('/api/attendance/my-status/:session_id', authenticateToken(), async (req, res) => {
     try {
         const user_nim = req.user.nim;
